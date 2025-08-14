@@ -242,7 +242,10 @@ rec {
         for
           (guard (toLower section == "core" && toLower key == "excludesfile"))
           (_:
-            resolveFile (home /.) value
+            # SAFETY: Ultimately this path will get passed into
+            # `builtins.readFile`, which ignores the context anyways. The
+            # context is only relevant if it becomes part of a derivation.
+            resolveFile (home /.) (builtins.unsafeDiscardStringContext value)
           )
       )
     );
