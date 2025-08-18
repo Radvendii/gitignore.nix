@@ -242,9 +242,11 @@ rec {
         for
           (guard (toLower section == "core" && toLower key == "excludesfile"))
           (_:
-            # SAFETY: Ultimately this path will get passed into
-            # `builtins.readFile`, which ignores the context anyways. The
-            # context is only relevant if it becomes part of a derivation.
+            # Paths with context can't be appended to other paths, so we have to
+            # remove the context here.
+            # SAFETY: gitignore.nix is not responsible for making sure the
+            # store paths pointed to in your global git config have been
+            # realised.
             resolveFile (home /.) (builtins.unsafeDiscardStringContext value)
           )
       )
