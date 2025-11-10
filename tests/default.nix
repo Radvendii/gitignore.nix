@@ -26,42 +26,71 @@ in
 
   # https://github.com/hercules-ci/gitignore.nix/pull/71
   regression-config-with-store-path =
-    let
-      excludesfile = pkgs.writeText "excludesfile" "";
-      gitconfig = pkgs.writeText "gitconfig" ''
-        [core]
-            excludesfile = ${excludesfile}
-      '';
-    in
     pkgs.stdenv.mkDerivation {
       name = "config-with-store-path";
       src = testdata.sourceUnfiltered + "/test-tree";
       buildInputs = [ pkgs.nix ];
       NIX_PATH="nixpkgs=${pkgs.path}";
       buildPhase = ''
-        HOME=/build/HOME
-        mkdir -p $HOME
+        # Set up an alternate nix store with a different store directory
+        export TEST_ROOT=$(pwd)/test-root
+        export NIX_BUILD_HOOK=
+        export NIX_CONF_DIR=$TEST_ROOT/etc
+        export NIX_LOCALSTATE_DIR=$TEST_ROOT/var
+        export NIX_LOG_DIR=$TEST_ROOT/var/log/nix
+        export NIX_STATE_DIR=$TEST_ROOT/var/nix
+        export NIX_STORE_DIR=$TEST_ROOT/store
+        export NIX_STORE=$TEST_ROOT/store
 
-        # it must be a symlink to the nix store.
-        # that way builtins.readFile adds in the relevant context
-        ln -s ${gitconfig} $HOME/.gitconfig
+        mkdir -p $NIX_STORE_DIR $NIX_CONF_DIR
 
-        export NIX_LOG_DIR=$TMPDIR
-        export NIX_STATE_DIR=$TMPDIR
+        # Write nix.conf - disable sandbox for nested builds
+        cat > $NIX_CONF_DIR/nix.conf <<EOF
+        sandbox = false
+        substituters =  # none
+        EOF
 
-        echo ---------------
+        nix-store --init
 
-        # outside of a nix-build, the context of this would be non-empty (replaceing the ''${} with ())
-        # inside the nix build, it's empty.
-        # Arghhhh
+        # Create config directory with gitconfig that references excludesfile
+        # This simulates home-manager creating a config in the store
+        # Both derivations are created in one expression so excludesfile can be referenced directly
+        configdir=$(nix-build --no-out-link --expr "
+          let
+            pkgs = import <nixpkgs> {};
+            excludesfile = derivation {
+              name = \"excludesfile\";
+              system = builtins.currentSystem;
+              builder = \"/bin/sh\";
+              args = [\"-c\" \"echo -n \\\"\\\" > \\\$out\"];
+            };
+          in
+          derivation {
+            name = \"home-config\";
+            system = builtins.currentSystem;
+            builder = \"${pkgs.bash}/bin/bash\";
+            PATH = \"${pkgs.coreutils}/bin\";
+            inherit excludesfile;
+            args = [\"-c\" \"
+              mkdir -p \\\$out/git
+              printf '[core]\\\\n    excludesfile = %s\\\\n' \\\$excludesfile > \\\$out/git/config
+            \"];
+          }
+        ")
 
-        nix-instantiate --eval --expr --strict --json --readonly-mode --option sandbox false \
-            'let pkgs = import <nixpkgs> {}; in builtins.getContext (builtins.readFile ${pkgs.writeText "foo" (toString pkgs.hello)})'
+        # Use XDG_CONFIG_HOME pointing directly to this store path (like home-manager does)
+        export XDG_CONFIG_HOME=$configdir
+        echo "XDG_CONFIG_HOME is now: $XDG_CONFIG_HOME"
+        echo "Config file contents:"
+        cat $XDG_CONFIG_HOME/git/config
 
-        echo ---------------
-
+        echo "---------------"
+        echo "Testing gitignoreSource with store path in git config:"
+        # This calls the real main code (gitignoreSource) which will naturally
+        # evaluate globalConfiguredExcludesFile when building the pattern tree
+        # Without the fix: fails with "a string that refers to a store path cannot be appended to a path"
+        # With the fix: succeeds (unsafeDiscardStringContext strips the context)
         if nix-instantiate --eval --expr \
-            --readonly-mode --option sandbox false \
             '((import ${gitignoreSource ../.} {}).gitignoreSource ./.).outPath'
         then touch $out
         else
