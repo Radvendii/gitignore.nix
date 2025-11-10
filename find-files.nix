@@ -295,7 +295,7 @@ rec {
    */
   # TODO: get something like builtins.pathType or builtins.stat into Nix
   guardFile = p: if pathExists p then [p] else [];
-  guardNonEmptyString = s: if s == "" then [s] else [];
+  guardNonEmptyString = s: if s == "" then [] else [s];
   guardNonNull = a: if a != null then a else [];
 
 
